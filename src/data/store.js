@@ -51,4 +51,55 @@ function getAllEconomy() {
 
 // --- Leveling helpers ---
 
-function
+function getLeveling(userId) {
+  const leveling = load('leveling');
+  if (!leveling[userId]) {
+    leveling[userId] = { xp: 0, level: 1 };
+    save('leveling', leveling);
+  }
+  return leveling[userId];
+}
+
+function setLeveling(userId, data) {
+  const leveling = load('leveling');
+  leveling[userId] = data;
+  save('leveling', leveling);
+}
+
+// --- Server settings ---
+
+function getSettings(guildId) {
+  const settings = load('settings');
+  if (!settings[guildId]) {
+    settings[guildId] = {
+      prefix: '!',
+      welcomeChannelId: null,
+      welcomeMessage: 'Welcome {user} to {server}!',
+      goodbyeChannelId: null,
+      goodbyeMessage: '{user} has left {server}.',
+      automod: { enabled: false, bannedWords: [] },
+      reactionRoles: {},
+    };
+    save('settings', settings);
+  }
+  return settings[guildId];
+}
+
+function setSettings(guildId, data) {
+  const settings = load('settings');
+  settings[guildId] = data;
+  save('settings', settings);
+}
+
+module.exports = {
+  load,
+  save,
+  getEconomy,
+  setEconomy,
+  getAllEconomy,
+  getLeveling,
+  setLeveling,
+  getSettings,
+  setSettings,
+};
+
