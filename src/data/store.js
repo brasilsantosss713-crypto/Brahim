@@ -51,19 +51,23 @@ function getAllEconomy() {
 
 // --- Leveling helpers ---
 
-function getLeveling(userId) {
+function getLevel(userId) {
   const leveling = load('leveling');
   if (!leveling[userId]) {
-    leveling[userId] = { xp: 0, level: 1 };
+    leveling[userId] = { xp: 0, level: 1, lastMessage: 0 };
     save('leveling', leveling);
   }
   return leveling[userId];
 }
 
-function setLeveling(userId, data) {
+function setLevel(userId, data) {
   const leveling = load('leveling');
   leveling[userId] = data;
   save('leveling', leveling);
+}
+
+function getAllLevels() {
+  return load('leveling');
 }
 
 // --- Server settings ---
@@ -97,8 +101,9 @@ module.exports = {
   getEconomy,
   setEconomy,
   getAllEconomy,
-  getLeveling,
-  setLeveling,
+  getLevel,
+  setLevel,
+  getAllLevels,
   getSettings,
   setSettings,
 };
