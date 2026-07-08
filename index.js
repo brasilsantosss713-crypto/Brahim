@@ -1,7 +1,7 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, Collection, REST, Routes } = require('discord.js');
 const { grantMessageXp } = require('./src/commands/leveling');
 const store = require('./src/data/store');
 
@@ -33,9 +33,45 @@ for (const file of commandFiles) {
 
 console.log(`Loaded ${client.commands.size} commands.`);
 
-client.once('ready', () => {
+// Auto-register slash commands with Discord on every startup.
+// This makes deployment self-contained — no separate "npm run deploy" step needed
+// on hosts like Railway where you don't have shell access.
+async function deployCommands() {
+  const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID } = process.env;
+  if (!DISCORD_TOKEN || !CLIENT_ID) {
+    console.error('Missing DISCORD_TOKEN or CLIENT_ID — cannot deploy commands.');
+    return;
+  }
+
+  const commandsJson = [];
+  for (const file of commandFiles) {
+    const commandModule = require(path.join(commandsPath, file));
+    const list = Array.isArray(commandModule) ? commandModule : commandModule.commands;
+    for (const command of list) {
+      commandsJson.push(command.data.toJSON());
+    }
+  }
+
+  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+
+  try {
+    console.log(`Deploying ${commandsJson.length} slash commands...`);
+    if (GUILD_ID) {
+      await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commandsJson });
+      console.log(`✅ Deployed ${commandsJson.length} commands to guild ${GUILD_ID}.`);
+    } else {
+      await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commandsJson });
+      console.log(`✅ Deployed ${commandsJson.length} commands globally (may take up to 1 hour to appear).`);
+    }
+  } catch (error) {
+    console.error('Failed to deploy commands:', error);
+  }
+}
+
+client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   client.user.setActivity('/help | SaharaBot', { type: 3 }); // 3 = Watching
+  await deployCommands();
 });
 
 // Handle slash command interactions
