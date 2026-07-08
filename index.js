@@ -1,93 +1,145 @@
-async button(interaction) {
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
+const { grantMessageXp } = require('./src/commands/leveling');
+const store = require('./src/data/store');
 
-  // Giveaway join button
-  if (interaction.customId === "giveaway_join") {
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessageReactions,
+  ],
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
+});
 
-    const result = await pool.query(
-      `SELECT id FROM giveaways WHERE message_id=$1`,
-      [interaction.message.id]
-    );
+client.commands = new Collection();
 
-    if (!result.rows[0]) {
-      return interaction.reply({
-        content: "❌ Giveaway not found.",
-        ephemeral: true
-      });
-    }
+// Load every command module in src/commands and register them by name.
+const commandsPath = path.join(__dirname, 'src', 'commands');
+const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
 
-    try {
-
-      await pool.query(
-        `INSERT INTO giveaway_entries
-        (giveaway_id,user_id)
-        VALUES($1,$2)`,
-        [
-          result.rows[0].id,
-          interaction.user.id
-        ]
-      );
-
-      return interaction.reply({
-        content: "🎉 You entered the giveaway!",
-        ephemeral: true
-      });
-
-    } catch {
-
-      return interaction.reply({
-        content: "❌ You already entered!",
-        ephemeral: true
-      });
-
-    }
-  }
-
-
-  // Prize claim button
-  if (interaction.customId === "claim_prize") {
-
-    const claimChannel =
-      interaction.guild.channels.cache.get(
-        "1519451768344285440"
-      );
-
-    if (!claimChannel) {
-      return interaction.reply({
-        content: "❌ Claim channel not found.",
-        ephemeral: true
-      });
-    }
-
-
-    await claimChannel.send({
-      content:
-      `🎟️ **Prize Claim Request**\n\n` +
-      `👤 Winner: ${interaction.user}\n` +
-      `🆔 User ID: ${interaction.user.id}\n\n` +
-      `Staff, please verify and give the prize.`
-    });
-
-
-    return interaction.reply({
-      content:
-      "✅ Your prize claim has been sent to the giveaway staff!",
-      ephemeral: true
-    });
+for (const file of commandFiles) {
+  const commandModule = require(path.join(commandsPath, file));
+  const list = Array.isArray(commandModule) ? commandModule : commandModule.commands;
+  for (const command of list) {
+    client.commands.set(command.data.name, command);
   }
 }
 
-const claimButton = new ButtonBuilder()
-.setCustomId("claim_prize")
-.setLabel("🎟️ Claim Prize")
-.setStyle(ButtonStyle.Primary);
+console.log(`Loaded ${client.commands.size} commands.`);
 
-const claimRow = new ActionRowBuilder()
-.addComponents(claimButton);
-
-interaction.channel.send({
-content:
-`🎉 **Giveaway Ended!**\n`+
-`🎁 Prize: **${prize}**\n`+
-`🏆 Winner(s): ${selected.map(x=>`<@${x}>`).join(", ")}`,
-components:[claimRow]
+client.once('ready', () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  client.user.setActivity('/help | SaharaBot', { type: 3 }); // 3 = Watching
 });
+
+// Handle slash command interactions
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const command = client.commands.get(interaction.commandName);
+  if (!command) return;
+
+  try {
+    await command.execute(interaction);
+  } catch (error) {
+    console.error(`Error executing /${interaction.commandName}:`, error);
+    const errorMessage = { content: 'There was an error running that command.', ephemeral: true };
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp(errorMessage);
+    } else {
+      await interaction.reply(errorMessage);
+    }
+  }
+});
+
+// Passive leveling: grant XP for chat activity, announce level-ups.
+// Also runs automod word filtering if enabled for the server.
+client.on('messageCreate', async message => {
+  if (message.author.bot || !message.guild) return;
+
+  const settings = store.getSettings(message.guild.id);
+  if (settings.automod.enabled && settings.automod.bannedWords.length > 0) {
+    const content = message.content.toLowerCase();
+    const matched = settings.automod.bannedWords.some(word => content.includes(word));
+    if (matched) {
+      await message.delete().catch(() => {});
+      message.channel.send(`⚠️ ${message.author}, that message was removed by automod.`)
+        .then(m => setTimeout(() => m.delete().catch(() => {}), 5000))
+        .catch(() => {});
+      return;
+    }
+  }
+
+  const newLevel = grantMessageXp(message.author.id);
+  if (newLevel) {
+    message.channel.send(`🎉 ${message.author} just leveled up to **Level ${newLevel}**!`).catch(() => {});
+  }
+});
+
+// Welcome messages
+client.on('guildMemberAdd', async member => {
+  const settings = store.getSettings(member.guild.id);
+  if (!settings.welcomeChannelId) return;
+
+  const channel = member.guild.channels.cache.get(settings.welcomeChannelId);
+  if (!channel) return;
+
+  const text = settings.welcomeMessage
+    .replace(/{user}/g, `${member}`)
+    .replace(/{server}/g, member.guild.name);
+  channel.send(text).catch(() => {});
+});
+
+// Goodbye messages
+client.on('guildMemberRemove', async member => {
+  const settings = store.getSettings(member.guild.id);
+  if (!settings.goodbyeChannelId) return;
+
+  const channel = member.guild.channels.cache.get(settings.goodbyeChannelId);
+  if (!channel) return;
+
+  const text = settings.goodbyeMessage
+    .replace(/{user}/g, member.user.tag)
+    .replace(/{server}/g, member.guild.name);
+  channel.send(text).catch(() => {});
+});
+
+// Reaction roles — grant or remove a role when a user reacts/unreacts on a configured message
+async function handleReactionRole(reaction, user, isAdd) {
+  if (user.bot) return;
+  if (reaction.partial) {
+    try { await reaction.fetch(); } catch { return; }
+  }
+
+  const guild = reaction.message.guild;
+  if (!guild) return;
+
+  const settings = store.getSettings(guild.id);
+  const mapping = settings.reactionRoles[reaction.message.id];
+  if (!mapping) return;
+
+  const emojiKey = reaction.emoji.id ? `<:${reaction.emoji.name}:${reaction.emoji.id}>` : reaction.emoji.name;
+  const roleId = mapping[emojiKey] || mapping[reaction.emoji.name];
+  if (!roleId) return;
+
+  const member = await guild.members.fetch(user.id).catch(() => null);
+  if (!member) return;
+
+  if (isAdd) {
+    await member.roles.add(roleId).catch(() => {});
+  } else {
+    await member.roles.remove(roleId).catch(() => {});
+  }
+}
+
+client.on('messageReactionAdd', (reaction, user) => handleReactionRole(reaction, user, true));
+client.on('messageReactionRemove', (reaction, user) => handleReactionRole(reaction, user, false));
+
+client.login(process.env.DISCORD_TOKEN);
+
