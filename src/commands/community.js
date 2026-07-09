@@ -1,7 +1,8 @@
-const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ChannelType } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const store = require('../data/store');
 
-const activeGiveaways = new Map(); // messageId -> { prize, winnerCount, endsAt, channelId, entrants: Set }
+const activeGiveaways = new Map(); // messageId -> { prize, winnerCount, endsAt, channelId, entrants: Set, collector }
+const endedGiveaways = new Map(); // messageId -> { prize, entrants: Set } — kept around so /giveawayreroll still works after it ends
 
 module.exports = [
   {
@@ -94,21 +95,46 @@ module.exports = [
       const minutes = interaction.options.getInteger('minutes');
       const winnerCount = interaction.options.getInteger('winners') || 1;
       const endsAt = Date.now() + minutes * 60 * 1000;
+      const entrants = new Set();
 
-      const embed = new EmbedBuilder()
-        .setColor(0xF1C40F)
-        .setTitle('🎉 Giveaway!')
-        .setDescription(`**Prize:** ${prize}\n**Winners:** ${winnerCount}\nReact with 🎉 to enter!\nEnds <t:${Math.floor(endsAt / 1000)}:R>`)
-        .setFooter({ text: `Started by ${interaction.user.tag}` });
+      const buildEmbed = () =>
+        new EmbedBuilder()
+          .setColor(0xF1C40F)
+          .setTitle(`🎉 ${prize}`)
+          .addFields(
+            { name: 'Winners', value: `${winnerCount}`, inline: true },
+            { name: 'Entries', value: `${entrants.size}`, inline: true },
+            { name: 'Hosted By', value: `${interaction.user}`, inline: true },
+            { name: 'Ends', value: `<t:${Math.floor(endsAt / 1000)}:R> • <t:${Math.floor(endsAt / 1000)}:F>` },
+          );
 
-      await interaction.reply({ embeds: [embed] });
+      const button = new ButtonBuilder().setCustomId('giveaway_enter').setLabel('🎉 Enter Giveaway').setStyle(ButtonStyle.Primary);
+      const row = new ActionRowBuilder().addComponents(button);
+
+      await interaction.reply({ embeds: [buildEmbed()], components: [row] });
       const message = await interaction.fetchReply();
-      await message.react('🎉');
 
-      const giveaway = { prize, winnerCount, endsAt, channelId: interaction.channel.id, messageId: message.id };
+      const giveaway = { prize, winnerCount, endsAt, channelId: interaction.channel.id, entrants };
       activeGiveaways.set(message.id, giveaway);
 
-      setTimeout(() => endGiveaway(interaction.client, message.id), minutes * 60 * 1000);
+      const collector = message.createMessageComponentCollector({ time: minutes * 60 * 1000 });
+      giveaway.collector = collector;
+
+      collector.on('collect', async i => {
+        if (i.customId !== 'giveaway_enter') return;
+
+        if (entrants.has(i.user.id)) {
+          entrants.delete(i.user.id);
+          await i.reply({ content: '❌ You left the giveaway.', ephemeral: true });
+        } else {
+          entrants.add(i.user.id);
+          await i.reply({ content: '✅ You entered the giveaway! Good luck!', ephemeral: true });
+        }
+
+        await message.edit({ embeds: [buildEmbed()] }).catch(() => {});
+      });
+
+      collector.on('end', () => endGiveaway(interaction.client, message.id));
     },
   },
 
@@ -120,10 +146,11 @@ module.exports = [
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
     async execute(interaction) {
       const messageId = interaction.options.getString('messageid');
-      if (!activeGiveaways.has(messageId)) {
+      const giveaway = activeGiveaways.get(messageId);
+      if (!giveaway) {
         return interaction.reply({ content: "That giveaway isn't active (or already ended).", ephemeral: true });
       }
-      await endGiveaway(interaction.client, messageId);
+      giveaway.collector?.stop();
       await interaction.reply({ content: '✅ Giveaway ended early.', ephemeral: true });
     },
   },
@@ -136,20 +163,15 @@ module.exports = [
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
     async execute(interaction) {
       const messageId = interaction.options.getString('messageid');
-      try {
-        const message = await interaction.channel.messages.fetch(messageId);
-        const reaction = message.reactions.cache.get('🎉');
-        if (!reaction) return interaction.reply({ content: 'No entries found on that message.', ephemeral: true });
+      const ended = endedGiveaways.get(messageId);
 
-        const users = await reaction.users.fetch();
-        const entrants = users.filter(u => !u.bot);
-        if (entrants.size === 0) return interaction.reply({ content: 'No valid entrants to reroll from.', ephemeral: true });
-
-        const winner = entrants.random();
-        await interaction.reply(`🔄 New winner: ${winner}! Congratulations!`);
-      } catch (err) {
-        await interaction.reply({ content: `Couldn't reroll: ${err.message}`, ephemeral: true });
+      if (!ended || ended.entrants.size === 0) {
+        return interaction.reply({ content: 'No entrants found for that giveaway (it may still be running, or had no entries).', ephemeral: true });
       }
+
+      const pool = Array.from(ended.entrants);
+      const winnerId = pool[Math.floor(Math.random() * pool.length)];
+      await interaction.reply(`🔄 New winner for **${ended.prize}**: <@${winnerId}>! Congratulations!`);
     },
   },
 
@@ -491,17 +513,19 @@ async function endGiveaway(client, messageId) {
   if (!giveaway) return;
   activeGiveaways.delete(messageId);
 
+  const entrants = Array.from(giveaway.entrants);
+  endedGiveaways.set(messageId, { prize: giveaway.prize, entrants: new Set(entrants) });
+
   try {
     const channel = await client.channels.fetch(giveaway.channelId);
-    const message = await channel.messages.fetch(messageId);
-    const reaction = message.reactions.cache.get('🎉');
+    const message = await channel.messages.fetch(messageId).catch(() => null);
 
-    if (!reaction) {
-      return channel.send(`🎉 Giveaway for **${giveaway.prize}** ended, but nobody entered.`);
+    if (message) {
+      const disabledRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('giveaway_enter').setLabel('🎉 Giveaway Ended').setStyle(ButtonStyle.Secondary).setDisabled(true)
+      );
+      await message.edit({ components: [disabledRow] }).catch(() => {});
     }
-
-    const users = await reaction.users.fetch();
-    const entrants = Array.from(users.filter(u => !u.bot).values());
 
     if (entrants.length === 0) {
       return channel.send(`🎉 Giveaway for **${giveaway.prize}** ended, but nobody entered.`);
@@ -514,7 +538,7 @@ async function endGiveaway(client, messageId) {
       winners.push(pool.splice(index, 1)[0]);
     }
 
-    await channel.send(`🎉 Congratulations ${winners.join(', ')}! You won **${giveaway.prize}**!`);
+    await channel.send(`🎉 Congratulations ${winners.map(id => `<@${id}>`).join(', ')}! You won **${giveaway.prize}**!`);
   } catch (err) {
     console.error('Failed to end giveaway:', err);
   }
