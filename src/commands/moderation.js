@@ -172,14 +172,101 @@ module.exports = [
 
   {
     data: new SlashCommandBuilder()
-      .setName('clearwarnings')
-      .setDescription('Clear all warnings for a member')
+      .setName('clearwarning')
+      .setDescription('Remove one warning (by number) or all warnings from a member')
       .addUserOption(o => o.setName('user').setDescription('The member to clear').setRequired(true))
+      .addIntegerOption(o => o.setName('number').setDescription('Which warning number to remove (see /warnings). Leave blank to clear all.'))
       .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
     async execute(interaction) {
       const user = interaction.options.getUser('user');
-      store.clearWarnings(user.id);
+      const number = interaction.options.getInteger('number');
+
+      const existing = store.getWarnings(user.id);
+      if (existing.length === 0) {
+        return interaction.reply({ content: `**${user.tag}** has no warnings to clear.`, ephemeral: true });
+      }
+
+      if (number) {
+        if (number < 1 || number > existing.length) {
+          return interaction.reply({ content: `Please give a number between 1 and ${existing.length}.`, ephemeral: true });
+        }
+        store.removeWarning(user.id, number - 1);
+        return interaction.reply(`🧹 Removed warning #${number} for **${user.tag}**.`);
+      }
+
+      store.removeWarning(user.id);
       await interaction.reply(`🧹 Cleared all warnings for **${user.tag}**.`);
+    },
+  },
+
+  {
+    data: new SlashCommandBuilder()
+      .setName('strike')
+      .setDescription('Issue a strike to a member for serious or repeated violations')
+      .addUserOption(o => o.setName('user').setDescription('The member to strike').setRequired(true))
+      .addStringOption(o => o.setName('reason').setDescription('Reason for the strike').setRequired(true))
+      .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
+    async execute(interaction) {
+      const user = interaction.options.getUser('user');
+      const reason = interaction.options.getString('reason');
+      const member = interaction.guild.members.cache.get(user.id);
+
+      const strikes = store.addStrike(user.id, {
+        reason,
+        moderator: interaction.user.tag,
+        timestamp: Date.now(),
+      });
+      store.addModLog(interaction.guild.id, {
+        type: 'strike', userId: user.id, userTag: user.tag,
+        moderator: interaction.user.tag, reason,
+      });
+
+      let escalationNote = '';
+
+      // Automatic escalation based on strike count.
+      if (member) {
+        if (strikes.length === 3 && member.moderatable) {
+          await member.timeout(60 * 60 * 1000, 'Automatic action: 3 strikes').catch(() => {});
+          escalationNote = '\n⚠️ Automatic action: member has been timed out for 1 hour (3 strikes reached).';
+        } else if (strikes.length === 5 && member.kickable) {
+          await member.kick('Automatic action: 5 strikes').catch(() => {});
+          escalationNote = '\n🔨 Automatic action: member has been kicked (5 strikes reached).';
+        } else if (strikes.length >= 7 && member.bannable) {
+          await member.ban({ reason: 'Automatic action: 7+ strikes' }).catch(() => {});
+          escalationNote = '\n⛔ Automatic action: member has been banned (7 strikes reached).';
+        }
+      }
+
+      await interaction.reply(`🚫 **${user.tag}** has been struck. Reason: ${reason}\nTotal strikes: ${strikes.length}${escalationNote}`);
+    },
+  },
+
+  {
+    data: new SlashCommandBuilder()
+      .setName('clearstrike')
+      .setDescription('Remove one strike (by number) or all strikes from a member')
+      .addUserOption(o => o.setName('user').setDescription('The member to clear').setRequired(true))
+      .addIntegerOption(o => o.setName('number').setDescription('Which strike number to remove (see /modlogs). Leave blank to clear all.'))
+      .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
+    async execute(interaction) {
+      const user = interaction.options.getUser('user');
+      const number = interaction.options.getInteger('number');
+
+      const existing = store.getStrikes(user.id);
+      if (existing.length === 0) {
+        return interaction.reply({ content: `**${user.tag}** has no strikes to clear.`, ephemeral: true });
+      }
+
+      if (number) {
+        if (number < 1 || number > existing.length) {
+          return interaction.reply({ content: `Please give a number between 1 and ${existing.length}.`, ephemeral: true });
+        }
+        store.removeStrike(user.id, number - 1);
+        return interaction.reply(`🗑️ Removed strike #${number} for **${user.tag}**.`);
+      }
+
+      store.removeStrike(user.id);
+      await interaction.reply(`🗑️ Cleared all strikes for **${user.tag}**.`);
     },
   },
 
