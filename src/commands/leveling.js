@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const store = require('../data/store');
 
 function xpForLevel(level) {
@@ -56,10 +56,86 @@ module.exports = [
       await interaction.reply({ embeds: [embed] });
     },
   },
+  {
+    data: new SlashCommandBuilder()
+      .setName('leveling')
+      .setDescription('Enable/disable leveling and manage level-up roles')
+      .addSubcommand(sub => sub.setName('enable').setDescription('Turn on the leveling system for this server'))
+      .addSubcommand(sub => sub.setName('disable').setDescription('Turn off the leveling system for this server'))
+      .addSubcommand(sub =>
+        sub.setName('channel').setDescription('Set the channel for level-up announcements (omit to announce in the same channel as the message)')
+          .addChannelOption(o => o.setName('channel').setDescription('Announcement channel'))
+      )
+      .addSubcommand(sub =>
+        sub.setName('addrole').setDescription('Award a role when a member reaches a level')
+          .addIntegerOption(o => o.setName('level').setDescription('The level required').setRequired(true))
+          .addRoleOption(o => o.setName('role').setDescription('The role to award').setRequired(true))
+      )
+      .addSubcommand(sub =>
+        sub.setName('removerole').setDescription('Remove a level-up role reward')
+          .addIntegerOption(o => o.setName('level').setDescription('The level to clear').setRequired(true))
+      )
+      .addSubcommand(sub => sub.setName('listroles').setDescription('List all configured level-up roles'))
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    async execute(interaction) {
+      const sub = interaction.options.getSubcommand();
+      const settings = store.getSettings(interaction.guild.id);
+
+      if (sub === 'enable') {
+        settings.leveling.enabled = true;
+        store.setSettings(interaction.guild.id, settings);
+        return interaction.reply('✅ Leveling system enabled. Members now earn XP by chatting.');
+      }
+
+      if (sub === 'disable') {
+        settings.leveling.enabled = false;
+        store.setSettings(interaction.guild.id, settings);
+        return interaction.reply('✅ Leveling system disabled.');
+      }
+
+      if (sub === 'channel') {
+        const channel = interaction.options.getChannel('channel');
+        settings.leveling.announceChannelId = channel ? channel.id : null;
+        store.setSettings(interaction.guild.id, settings);
+        return interaction.reply(
+          channel ? `✅ Level-up announcements will post in ${channel}.` : '✅ Level-up announcements will post in whichever channel the message was sent in.'
+        );
+      }
+
+      if (sub === 'addrole') {
+        const level = interaction.options.getInteger('level');
+        const role = interaction.options.getRole('role');
+        settings.leveling.levelRoles[level] = role.id;
+        store.setSettings(interaction.guild.id, settings);
+        return interaction.reply(`✅ Members will receive **${role.name}** upon reaching level ${level}.`);
+      }
+
+      if (sub === 'removerole') {
+        const level = interaction.options.getInteger('level');
+        delete settings.leveling.levelRoles[level];
+        store.setSettings(interaction.guild.id, settings);
+        return interaction.reply(`✅ Removed the level-up role reward for level ${level}.`);
+      }
+
+      if (sub === 'listroles') {
+        const entries = Object.entries(settings.leveling.levelRoles);
+        if (entries.length === 0) return interaction.reply('No level-up roles configured yet.');
+
+        const lines = entries
+          .sort((a, b) => Number(a[0]) - Number(b[0]))
+          .map(([level, roleId]) => `Level ${level} → <@&${roleId}>`);
+        return interaction.reply(lines.join('\n'));
+      }
+    },
+  },
 ];
 
 // Exported separately so index.js can hook this into messageCreate for passive XP gain.
-module.exports.grantMessageXp = function grantMessageXp(userId) {
+// Returns null if nothing happened, or { level, roleId, announceChannelId } on level-up.
+module.exports.grantMessageXp = function grantMessageXp(userId, guildId) {
+  const settings = store.getSettings(guildId);
+  if (!settings.leveling.enabled) return null;
+
   const data = store.getLevel(userId);
   const now = Date.now();
 
@@ -79,5 +155,11 @@ module.exports.grantMessageXp = function grantMessageXp(userId) {
   }
 
   store.setLevel(userId, data);
-  return leveledUp ? data.level : null;
+  if (!leveledUp) return null;
+
+  return {
+    level: data.level,
+    roleId: settings.leveling.levelRoles[data.level] || null,
+    announceChannelId: settings.leveling.announceChannelId || null,
+  };
 };
