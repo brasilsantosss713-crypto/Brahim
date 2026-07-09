@@ -1,7 +1,7 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const { Client, GatewayIntentBits, Partials, Collection } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, Collection, REST, Routes } = require('discord.js');
 const { grantMessageXp } = require('./src/commands/leveling');
 const store = require('./src/data/store');
 
@@ -33,9 +33,45 @@ for (const file of commandFiles) {
 
 console.log(`Loaded ${client.commands.size} commands.`);
 
-client.once('ready', () => {
+// Auto-register slash commands with Discord on every startup.
+// This makes deployment self-contained — no separate "npm run deploy" step needed
+// on hosts like Railway where you don't have shell access.
+async function deployCommands() {
+  const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID } = process.env;
+  if (!DISCORD_TOKEN || !CLIENT_ID) {
+    console.error('Missing DISCORD_TOKEN or CLIENT_ID — cannot deploy commands.');
+    return;
+  }
+
+  const commandsJson = [];
+  for (const file of commandFiles) {
+    const commandModule = require(path.join(commandsPath, file));
+    const list = Array.isArray(commandModule) ? commandModule : commandModule.commands;
+    for (const command of list) {
+      commandsJson.push(command.data.toJSON());
+    }
+  }
+
+  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+
+  try {
+    console.log(`Deploying ${commandsJson.length} slash commands...`);
+    if (GUILD_ID) {
+      await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commandsJson });
+      console.log(`✅ Deployed ${commandsJson.length} commands to guild ${GUILD_ID}.`);
+    } else {
+      await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commandsJson });
+      console.log(`✅ Deployed ${commandsJson.length} commands globally (may take up to 1 hour to appear).`);
+    }
+  } catch (error) {
+    console.error('Failed to deploy commands:', error);
+  }
+}
+
+client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   client.user.setActivity('/help | SaharaBot', { type: 3 }); // 3 = Watching
+  await deployCommands();
 });
 
 // Handle slash command interactions
@@ -76,9 +112,20 @@ client.on('messageCreate', async message => {
     }
   }
 
-  const newLevel = grantMessageXp(message.author.id);
+  const newLevel = grantMessageXp(message.author.id, message.guild.id);
   if (newLevel) {
-    message.channel.send(`🎉 ${message.author} just leveled up to **Level ${newLevel}**!`).catch(() => {});
+    const announceChannel = newLevel.announceChannelId
+      ? message.guild.channels.cache.get(newLevel.announceChannelId)
+      : message.channel;
+
+    if (announceChannel) {
+      announceChannel.send(`🎉 ${message.author} just leveled up to **Level ${newLevel.level}**!`).catch(() => {});
+    }
+
+    if (newLevel.roleId) {
+      const member = message.member;
+      member?.roles.add(newLevel.roleId).catch(() => {});
+    }
   }
 });
 
@@ -141,5 +188,31 @@ async function handleReactionRole(reaction, user, isAdd) {
 client.on('messageReactionAdd', (reaction, user) => handleReactionRole(reaction, user, true));
 client.on('messageReactionRemove', (reaction, user) => handleReactionRole(reaction, user, false));
 
-client.login(process.env.DISCORD_TOKEN);
+// Reminder scheduler — checks every 30 seconds for any reminders that are due,
+// sends them (DM first, falls back to the original channel), then removes them.
+// Polling like this (rather than one setTimeout per reminder) means reminders
+// survive bot restarts, which matters on hosts like Railway.
+setInterval(async () => {
+  const due = store.getAllReminders().filter(r => r.remindAt <= Date.now());
 
+  for (const reminder of due) {
+    store.removeReminder(reminder.id);
+
+    try {
+      const user = await client.users.fetch(reminder.userId);
+      const creator = reminder.createdBy !== reminder.userId ? await client.users.fetch(reminder.createdBy).catch(() => null) : null;
+      const text = creator
+        ? `⏰ Reminder from ${creator.tag}: ${reminder.message}`
+        : `⏰ Reminder: ${reminder.message}`;
+
+      await user.send(text).catch(async () => {
+        const channel = await client.channels.fetch(reminder.channelId).catch(() => null);
+        if (channel) channel.send(`${user}, ${text}`).catch(() => {});
+      });
+    } catch (err) {
+      console.error(`Failed to deliver reminder #${reminder.id}:`, err);
+    }
+  }
+}, 30 * 1000);
+
+client.login(process.env.DISCORD_TOKEN);
