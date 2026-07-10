@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits, Partials, Collection, REST, Routes } = require('discord.js');
 const { grantMessageXp } = require('./src/commands/leveling');
+const { createTicketChannel } = require('./src/commands/tickets');
 const store = require('./src/data/store');
 
 const client = new Client({
@@ -76,20 +77,54 @@ client.once('ready', async () => {
 
 // Handle slash command interactions
 client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+  if (interaction.isChatInputCommand()) {
+    const command = client.commands.get(interaction.commandName);
+    if (!command) return;
 
-  const command = client.commands.get(interaction.commandName);
-  if (!command) return;
+    try {
+      await command.execute(interaction);
+    } catch (error) {
+      console.error(`Error executing /${interaction.commandName}:`, error);
+      const errorMessage = { content: 'There was an error running that command.', ephemeral: true };
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(errorMessage);
+      } else {
+        await interaction.reply(errorMessage);
+      }
+    }
+    return;
+  }
 
-  try {
-    await command.execute(interaction);
-  } catch (error) {
-    console.error(`Error executing /${interaction.commandName}:`, error);
-    const errorMessage = { content: 'There was an error running that command.', ephemeral: true };
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(errorMessage);
-    } else {
-      await interaction.reply(errorMessage);
+  // Ticket panel button clicks — customId format: ticket_open_<categoryIndex>
+  if (interaction.isButton() && interaction.customId.startsWith('ticket_open_')) {
+    try {
+      const settings = store.getSettings(interaction.guild.id);
+      const categories = settings.ticketPanels[interaction.message.id];
+      if (!categories) {
+        return interaction.reply({ content: 'This ticket panel is no longer configured. Ask an admin to recreate it.', ephemeral: true });
+      }
+
+      const index = parseInt(interaction.customId.split('_')[2], 10);
+      const category = categories[index]?.label || 'General';
+
+      const existing = interaction.guild.channels.cache.find(
+        c => c.topic && c.topic.startsWith(`ticket-owner:${interaction.user.id}`)
+      );
+      if (existing) {
+        return interaction.reply({ content: `You already have an open ticket: ${existing}`, ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      const channel = await createTicketChannel(interaction.guild, interaction.user, category, null);
+      await interaction.editReply(`✅ Ticket created: ${channel}`);
+    } catch (error) {
+      console.error('Failed to open ticket from panel:', error);
+      const errorMessage = { content: 'Something went wrong opening your ticket. Please try again or contact an admin.', ephemeral: true };
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(errorMessage).catch(() => {});
+      } else {
+        await interaction.reply(errorMessage).catch(() => {});
+      }
     }
   }
 });
