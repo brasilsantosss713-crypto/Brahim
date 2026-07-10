@@ -1,9 +1,9 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const { Client, GatewayIntentBits, Partials, Collection, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, Collection, REST, Routes, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder } = require('discord.js');
 const { grantMessageXp } = require('./src/commands/leveling');
-const { createTicketChannel } = require('./src/commands/tickets');
+const { createTicketChannel, closeTicket } = require('./src/commands/tickets');
 const store = require('./src/data/store');
 
 const client = new Client({
@@ -95,8 +95,8 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // Ticket panel button clicks — customId format: ticket_open_<categoryIndex>
-  if (interaction.isButton() && interaction.customId.startsWith('ticket_open_')) {
+  // Ticket panel dropdown selections
+  if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_select') {
     try {
       const settings = store.getSettings(interaction.guild.id);
       const categories = settings.ticketPanels[interaction.message.id];
@@ -104,7 +104,7 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: 'This ticket panel is no longer configured. Ask an admin to recreate it.', ephemeral: true });
       }
 
-      const index = parseInt(interaction.customId.split('_')[2], 10);
+      const index = parseInt(interaction.values[0], 10);
       const category = categories[index]?.label || 'General';
 
       const existing = interaction.guild.channels.cache.find(
@@ -126,6 +126,39 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply(errorMessage).catch(() => {});
       }
     }
+  }
+
+  // Ticket "Claim" button — any staff member with Manage Channels can claim
+  if (interaction.isButton() && interaction.customId === 'ticket_claim') {
+    if (!interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+      return interaction.reply({ content: "You don't have permission to claim tickets.", ephemeral: true });
+    }
+
+    const message = interaction.message;
+    const claimedRow = new ActionRowBuilder().addComponents(
+      ButtonBuilder.from(message.components[0].components[0]).setLabel(`Claimed by ${interaction.user.username}`).setDisabled(true),
+      ButtonBuilder.from(message.components[0].components[1]),
+    );
+
+    await interaction.update({ components: [claimedRow] });
+    await interaction.channel.send(`🙋 This ticket has been claimed by ${interaction.user}.`);
+    return;
+  }
+
+  // Ticket "Close" button
+  if (interaction.isButton() && interaction.customId === 'ticket_close') {
+    const channel = interaction.channel;
+    const ownerId = channel.topic?.split(':')[1];
+    const isOwner = interaction.user.id === ownerId;
+    const isStaff = interaction.member.permissions.has(PermissionFlagsBits.ManageChannels);
+
+    if (!isOwner && !isStaff) {
+      return interaction.reply({ content: "You don't have permission to close this ticket.", ephemeral: true });
+    }
+
+    await interaction.reply('🔒 Closing this ticket and generating a transcript...');
+    await closeTicket(channel, interaction.user);
+    return;
   }
 });
 
