@@ -1,4 +1,7 @@
-const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const {
+  SlashCommandBuilder, PermissionFlagsBits, ChannelType, EmbedBuilder,
+  ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder,
+} = require('discord.js');
 const store = require('../data/store');
 
 module.exports = [
@@ -27,7 +30,7 @@ module.exports = [
   {
     data: new SlashCommandBuilder()
       .setName('closeticket')
-      .setDescription('Close the current support ticket'),
+      .setDescription('Close the current support ticket (also available as a button inside the ticket)'),
     async execute(interaction) {
       const channel = interaction.channel;
 
@@ -43,62 +46,66 @@ module.exports = [
         return interaction.reply({ content: "You don't have permission to close this ticket.", ephemeral: true });
       }
 
-      await interaction.reply('🔒 Closing this ticket in 5 seconds...');
-      setTimeout(() => channel.delete().catch(() => {}), 5000);
+      await interaction.reply('🔒 Closing this ticket and generating a transcript...');
+      await closeTicket(channel, interaction.user);
     },
   },
 
   {
     data: new SlashCommandBuilder()
       .setName('ticketpanel')
-      .setDescription('Post a ticket panel with category buttons (like a support hub)')
+      .setDescription('Post a ticket panel with a dropdown of categories')
       .addChannelOption(o => o.setName('channel').setDescription('Channel to post the panel in').setRequired(true).addChannelTypes(ChannelType.GuildText))
-      .addStringOption(o => o.setName('title').setDescription('Panel title, e.g. "Open a Ticket"').setRequired(true))
-      .addStringOption(o => o.setName('description').setDescription('Full description text — explain each category here').setRequired(true))
-      .addStringOption(o => o.setName('label1').setDescription('Category 1 button label').setRequired(true))
-      .addStringOption(o => o.setName('emoji1').setDescription('Category 1 emoji'))
-      .addStringOption(o => o.setName('label2').setDescription('Category 2 button label'))
-      .addStringOption(o => o.setName('emoji2').setDescription('Category 2 emoji'))
-      .addStringOption(o => o.setName('label3').setDescription('Category 3 button label'))
-      .addStringOption(o => o.setName('emoji3').setDescription('Category 3 emoji'))
-      .addStringOption(o => o.setName('label4').setDescription('Category 4 button label'))
-      .addStringOption(o => o.setName('emoji4').setDescription('Category 4 emoji'))
-      .addStringOption(o => o.setName('label5').setDescription('Category 5 button label'))
-      .addStringOption(o => o.setName('emoji5').setDescription('Category 5 emoji'))
+      .addStringOption(o => o.setName('name1').setDescription('Category 1 name').setRequired(true))
+      .addStringOption(o => o.setName('desc1').setDescription('Category 1 description').setRequired(true))
+      .addStringOption(o => o.setName('title').setDescription('Panel title (default: "Tickets")'))
+      .addStringOption(o => o.setName('intro').setDescription('Intro line (default: "Open a ticket below.")'))
+      .addStringOption(o => o.setName('name2').setDescription('Category 2 name'))
+      .addStringOption(o => o.setName('desc2').setDescription('Category 2 description'))
+      .addStringOption(o => o.setName('name3').setDescription('Category 3 name'))
+      .addStringOption(o => o.setName('desc3').setDescription('Category 3 description'))
+      .addStringOption(o => o.setName('name4').setDescription('Category 4 name'))
+      .addStringOption(o => o.setName('desc4').setDescription('Category 4 description'))
+      .addStringOption(o => o.setName('name5').setDescription('Category 5 name'))
+      .addStringOption(o => o.setName('desc5').setDescription('Category 5 description'))
+      .addStringOption(o => o.setName('name6').setDescription('Category 6 name'))
+      .addStringOption(o => o.setName('desc6').setDescription('Category 6 description'))
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
     async execute(interaction) {
       const channel = interaction.options.getChannel('channel');
-      const title = interaction.options.getString('title');
-      const description = interaction.options.getString('description');
+      const title = interaction.options.getString('title') || 'Tickets';
+      const intro = interaction.options.getString('intro') || 'Open a ticket below.';
 
-      const categories = [1, 2, 3, 4, 5]
+      const categories = [1, 2, 3, 4, 5, 6]
         .map(n => ({
-          label: interaction.options.getString(`label${n}`),
-          emoji: interaction.options.getString(`emoji${n}`),
+          name: interaction.options.getString(`name${n}`),
+          desc: interaction.options.getString(`desc${n}`),
         }))
-        .filter(c => c.label);
+        .filter(c => c.name && c.desc);
 
+      const bodyLines = categories.map(c => `**${c.name}**\n${c.desc}`);
       const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
+        .setColor(0x2B2D31)
         .setTitle(title)
-        .setDescription(description);
+        .setDescription(`${intro}\n\n${bodyLines.join('\n')}`);
 
-      const buttons = categories.map((c, i) => {
-        const btn = new ButtonBuilder()
-          .setCustomId(`ticket_open_${i}`)
-          .setLabel(c.label)
-          .setStyle([ButtonStyle.Primary, ButtonStyle.Success, ButtonStyle.Danger, ButtonStyle.Secondary][i % 4]);
-        if (c.emoji) btn.setEmoji(c.emoji);
-        return btn;
-      });
+      const select = new StringSelectMenuBuilder()
+        .setCustomId('ticket_select')
+        .setPlaceholder('Select a ticket type...')
+        .addOptions(
+          categories.map((c, i) => ({
+            label: c.name.slice(0, 100),
+            description: c.desc.slice(0, 100),
+            value: `${i}`,
+          }))
+        );
 
-      // Discord allows max 5 buttons per row.
-      const row = new ActionRowBuilder().addComponents(buttons);
+      const row = new ActionRowBuilder().addComponents(select);
 
       const message = await channel.send({ embeds: [embed], components: [row] });
 
       const settings = store.getSettings(interaction.guild.id);
-      settings.ticketPanels[message.id] = categories;
+      settings.ticketPanels[message.id] = categories.map(c => ({ label: c.name }));
       store.setSettings(interaction.guild.id, settings);
 
       await interaction.reply({ content: `✅ Ticket panel posted in ${channel}.`, ephemeral: true });
@@ -106,7 +113,8 @@ module.exports = [
   },
 ];
 
-// Shared helper — creates a private ticket channel for a user, optionally tagged with a category.
+// Shared helper — creates a private ticket channel for a user, optionally tagged with a category,
+// and posts the welcome embed with Close/Claim buttons.
 async function createTicketChannel(guild, user, category, reason) {
   const settings = store.getSettings(guild.id);
 
@@ -132,12 +140,79 @@ async function createTicketChannel(guild, user, category, reason) {
     .setColor(0x5865F2)
     .setTitle(`🎫 ${category} Ticket`)
     .setDescription(
-      `Thanks for reaching out, ${user}!\n\n**Category:** ${category}${reason ? `\n**Details:** ${reason}` : ''}\n\nA staff member will be with you shortly. Use \`/closeticket\` when this is resolved.`
+      `Thanks for reaching out, ${user}!\n\n**Category:** ${category}${reason ? `\n**Details:** ${reason}` : ''}\n\nA staff member will claim this shortly.`
     )
     .setTimestamp();
 
-  await channel.send({ content: `${user}`, embeds: [embed] });
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('ticket_claim').setLabel('Claim').setEmoji('🙋').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger),
+  );
+
+  await channel.send({ content: `${user}`, embeds: [embed], components: [row] });
   return channel;
 }
 
+// Fetches up to 500 messages from a ticket channel and formats them into a plain-text transcript.
+async function generateTranscript(channel) {
+  let allMessages = [];
+  let lastId;
+
+  for (let i = 0; i < 5; i++) {
+    const batch = await channel.messages.fetch({ limit: 100, before: lastId });
+    if (batch.size === 0) break;
+    allMessages = allMessages.concat(Array.from(batch.values()));
+    lastId = batch.last().id;
+    if (batch.size < 100) break;
+  }
+
+  allMessages.reverse(); // oldest first
+
+  const lines = allMessages.map(m => {
+    const time = new Date(m.createdTimestamp).toISOString().replace('T', ' ').slice(0, 19);
+    const attachments = m.attachments.size > 0 ? ` [attachments: ${m.attachments.map(a => a.url).join(', ')}]` : '';
+    const content = m.content || (m.embeds.length > 0 ? '[embed]' : '');
+    return `[${time}] ${m.author.tag}: ${content}${attachments}`;
+  });
+
+  const header = `Transcript for #${channel.name}\nGenerated: ${new Date().toISOString()}\n${'='.repeat(50)}\n\n`;
+  return header + lines.join('\n');
+}
+
+// Closes a ticket: generates a transcript, sends it to the mod-log channel (falling back to
+// DMing the ticket owner), then deletes the channel after a short delay.
+async function closeTicket(channel, closedBy) {
+  const guild = channel.guild;
+  const settings = store.getSettings(guild.id);
+  const ownerId = channel.topic?.split(':')[1];
+
+  try {
+    const transcriptText = await generateTranscript(channel);
+    const attachment = new AttachmentBuilder(Buffer.from(transcriptText, 'utf-8'), { name: `${channel.name}-transcript.txt` });
+
+    const embed = new EmbedBuilder()
+      .setColor(0x95A5A6)
+      .setTitle('📄 Ticket Transcript')
+      .addFields(
+        { name: 'Ticket', value: `#${channel.name}`, inline: true },
+        { name: 'Closed By', value: closedBy.tag, inline: true },
+      )
+      .setTimestamp();
+
+    const logChannel = settings.modLogChannelId ? guild.channels.cache.get(settings.modLogChannelId) : null;
+
+    if (logChannel) {
+      await logChannel.send({ embeds: [embed], files: [attachment] });
+    } else if (ownerId) {
+      const owner = await guild.client.users.fetch(ownerId).catch(() => null);
+      if (owner) await owner.send({ embeds: [embed], files: [attachment] }).catch(() => {});
+    }
+  } catch (err) {
+    console.error('Failed to generate/send transcript:', err);
+  }
+
+  setTimeout(() => channel.delete().catch(() => {}), 5000);
+}
+
 module.exports.createTicketChannel = createTicketChannel;
+module.exports.closeTicket = closeTicket;
