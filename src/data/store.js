@@ -176,20 +176,12 @@ function getBackup(guildId) {
 
 // --- Reminder helpers ---
 
-function addReminder(userId, message, remindAt, channelId, createdBy) {
+function addReminder(reminder) {
   const reminders = load('reminders');
   if (!reminders.list) reminders.list = [];
   if (!reminders.nextId) reminders.nextId = 1;
   
-  const reminder = {
-    id: reminders.nextId++,
-    userId,
-    message,
-    remindAt,
-    channelId,
-    createdBy,
-  };
-  
+  reminder.id = reminders.nextId++;
   reminders.list.push(reminder);
   save('reminders', reminders);
   return reminder;
@@ -198,6 +190,11 @@ function addReminder(userId, message, remindAt, channelId, createdBy) {
 function getAllReminders() {
   const reminders = load('reminders');
   return reminders.list || [];
+}
+
+function getRemindersForUser(userId) {
+  const reminders = load('reminders');
+  return (reminders.list || []).filter(r => r.userId === userId || r.createdBy === userId);
 }
 
 function removeReminder(reminderId) {
@@ -226,6 +223,7 @@ module.exports = {
   getBackup,
   addReminder,
   getAllReminders,
+  getRemindersForUser,
   removeReminder,
 };
 
