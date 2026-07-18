@@ -111,6 +111,33 @@ module.exports = [
       await interaction.reply({ content: `✅ Ticket panel posted in ${channel}.`, ephemeral: true });
     },
   },
+
+  {
+    data: new SlashCommandBuilder()
+      .setName('modleaderboard')
+      .setDescription('View the leaderboard of tickets closed by staff'),
+    async execute(interaction) {
+      const all = store.getAllModPoints();
+      const sorted = Object.entries(all).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+      if (sorted.length === 0) {
+        return interaction.reply('No tickets have been closed by staff yet.');
+      }
+
+      const lines = await Promise.all(
+        sorted.map(async ([id, points], i) => {
+          const user = await interaction.client.users.fetch(id).catch(() => null);
+          return `**${i + 1}.** ${user ? user.tag : 'Unknown User'} — ${points} ticket(s) closed`;
+        })
+      );
+
+      const embed = new EmbedBuilder()
+        .setColor(0x1ABC9C)
+        .setTitle('🎫 Ticket Close Leaderboard')
+        .setDescription(lines.join('\n'));
+      await interaction.reply({ embeds: [embed] });
+    },
+  },
 ];
 
 // Shared helper — creates a private ticket channel for a user, optionally tagged with a category,
@@ -185,6 +212,11 @@ async function closeTicket(channel, closedBy) {
   const guild = channel.guild;
   const settings = store.getSettings(guild.id);
   const ownerId = channel.topic?.split(':')[1];
+
+  // Award 2 mod points if the person closing it isn't the ticket owner (i.e. staff handled it).
+  if (ownerId && closedBy.id !== ownerId) {
+    store.addModPoint(closedBy.id, 2);
+  }
 
   try {
     const transcriptText = await generateTranscript(channel);
