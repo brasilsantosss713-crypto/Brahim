@@ -108,6 +108,69 @@ const LAYOUT = [
   },
 ];
 
+const ROLE_LAYOUT = [
+  {
+    section: '👑 OWNER',
+    roles: ['👑 Owner', '👑 Co-Owner', '⚜️ Developer', '🛠️ Manager', '📋 Administrator'],
+  },
+  {
+    section: '🛡️ STAFF',
+    roles: [
+      '🛡️ Head Moderator', '🔨 Moderator', '🧑\u200d⚖️ Trial Moderator', '🎫 Support Team',
+      '🎉 Giveaway Manager', '🤝 Partnership Manager', '📢 Event Host', '🤖 Bot Manager', '📸 Media Team',
+    ],
+  },
+  {
+    section: '🍩 DONUTSMP',
+    roles: [
+      '🍩 Donut Legend', '🍩 Donut Veteran', '🍩 Donut Member', '👑 Donut King', '💰 Millionaire',
+      '💎 Billionaire', '🏦 Spawn Investor', '🛒 Marketplace Seller', '🤝 Trusted Trader', '🏆 Richest Player',
+      '⚔️ PvP Champion', '🛡️ PvP Warrior', '🏹 Archer', '⛏️ Miner', '🪓 Lumberjack', '🌾 Farmer',
+      '🎣 Fisherman', '🏗️ Master Builder', '🏰 Kingdom Owner', '🧭 Explorer', '🐉 Dragon Slayer',
+      '💀 Bounty Hunter', '🎯 Grinder', '📦 Collector', '🔥 Nether Explorer', '🌌 End Conqueror',
+    ],
+  },
+  {
+    section: '⭐ LEVELING',
+    roles: [
+      '🌱 Level 5', '🍃 Level 10', '⭐ Level 15', '🔥 Level 20', '💎 Level 30', '👑 Level 40',
+      '🏆 Level 50', '🌌 Level 75', '⚡ Level 100', '💠 Prestige I', '💠 Prestige II', '💠 Prestige III',
+    ],
+  },
+  {
+    section: '💎 SPECIAL',
+    roles: [
+      '💎 Booster', '⭐ VIP', '🏆 Donator', '❤️ Supporter', '🎥 Content Creator', '📺 Streamer',
+      '🤝 Partner', '🥇 OG Member', '🎊 Early Supporter', "👑 Issa's Elite",
+    ],
+  },
+  {
+    section: '🎨 COLORS',
+    roles: ['❤️ Red', '🧡 Orange', '💛 Yellow', '💚 Green', '🩵 Cyan', '💙 Blue', '💜 Purple', '🩷 Pink', '🖤 Black', '🤍 White'],
+  },
+  {
+    section: '🔔 PINGS',
+    roles: ['🎁 Giveaway Ping', '⚡ Quickdrop Ping', '📢 Announcement Ping', '🎉 Event Ping', '🍩 DonutSMP Ping', '🤝 Partner Ping'],
+  },
+  {
+    section: '🤖 OTHER',
+    roles: ['😴 AFK', '🤖 Bots'],
+  },
+];
+
+const ROLE_COLORS = {
+  '❤️ Red': 0xE74C3C,
+  '🧡 Orange': 0xE67E22,
+  '💛 Yellow': 0xF1C40F,
+  '💚 Green': 0x2ECC71,
+  '🩵 Cyan': 0x1ABC9C,
+  '💙 Blue': 0x3498DB,
+  '💜 Purple': 0x9B59B6,
+  '🩷 Pink': 0xE91E63,
+  '🖤 Black': 0x23272A,
+  '🤍 White': 0xFFFFFF,
+};
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -222,6 +285,64 @@ module.exports = [
         await sleep(2000);
         await currentChannel.delete('Server wipe requested via /wipeserver').catch(() => {});
       }
+    },
+  },
+
+  {
+    data: new SlashCommandBuilder()
+      .setName('importroles')
+      .setDescription('Create the full role hierarchy (Owner, Staff, DonutSMP, Leveling, Special, Colors, Pings, Other)')
+      .addBooleanOption(o => o.setName('confirm').setDescription('Confirm you want to create ~88 roles').setRequired(true))
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    async execute(interaction) {
+      const confirm = interaction.options.getBoolean('confirm');
+      if (!confirm) {
+        return interaction.reply({ content: 'Cancelled. Run again with `confirm: True` when ready — this creates a lot of roles!', ephemeral: true });
+      }
+
+      await interaction.deferReply();
+      const guild = interaction.guild;
+      let created = 0;
+      let skipped = 0;
+
+      for (const section of ROLE_LAYOUT) {
+        const separatorName = `━━━━━━━━━━ ${section.section} ━━━━━━━━━━`;
+
+        if (!guild.roles.cache.some(r => r.name === separatorName)) {
+          try {
+            await guild.roles.create({ name: separatorName, permissions: [], hoist: false, mentionable: false });
+            created++;
+            await sleep(500);
+          } catch (err) {
+            console.error(`Failed to create separator "${separatorName}":`, err);
+          }
+        } else {
+          skipped++;
+        }
+
+        for (const roleName of section.roles) {
+          if (guild.roles.cache.some(r => r.name === roleName)) {
+            skipped++;
+            continue;
+          }
+
+          try {
+            await guild.roles.create({
+              name: roleName,
+              color: ROLE_COLORS[roleName] || null,
+              permissions: [],
+            });
+            created++;
+            await sleep(500);
+          } catch (err) {
+            console.error(`Failed to create role "${roleName}":`, err);
+          }
+        }
+      }
+
+      await interaction.editReply(
+        `✅ Role import complete!\n**Created:** ${created}\n**Skipped (already existed):** ${skipped}\n\n⚠️ Discord doesn't preserve creation order visually — you'll likely want to drag the roles into the exact order shown in Server Settings → Roles.`
+      );
     },
   },
 ];
