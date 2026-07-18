@@ -142,6 +142,17 @@ client.on('interactionCreate', async interaction => {
 
     await interaction.update({ components: [claimedRow] });
     await interaction.channel.send(`🙋 This ticket has been claimed by ${interaction.user}.`);
+
+    // Award 2 mod points for claiming.
+    store.addModPoint(interaction.user.id, 2);
+
+    // Rename the channel to reflect it's been claimed, e.g. ticket-alex -> claimed-alex
+    const currentName = interaction.channel.name;
+    const newName = currentName.startsWith('ticket-')
+      ? currentName.replace('ticket-', 'claimed-')
+      : `claimed-${currentName}`;
+    await interaction.channel.setName(newName.slice(0, 100)).catch(() => {});
+
     return;
   }
 
