@@ -1,3 +1,7 @@
+// Simple JSON-file-backed data store.
+// Good enough for small/medium servers. Swap this out for a real database
+// (SQLite, MongoDB, PostgreSQL) if you need something production-grade.
+
 const fs = require('fs');
 const path = require('path');
 
@@ -24,36 +28,6 @@ function save(name, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
-const DEFAULT_SETTINGS = {
-  mutedRoleId: null,
-  welcomeChannelId: null,
-  welcomeMessage: 'Welcome {user} to {server}! 🎉',
-  goodbyeChannelId: null,
-  goodbyeMessage: '{user} has left {server}. 👋',
-  modLogChannelId: null,
-  automod: { enabled: false, bannedWords: [] },
-  hierarchy: [],
-  reactionRoles: {},
-  rules: '',
-  faq: [],
-  socials: [],
-  affiliates: [],
-  suggestionsChannelId: null,
-  verifyRoleId: null,
-  security: {
-    inviteGuard: false,
-    webhookGuard: false,
-    joinGuard: false,
-    minAccountAgeDays: 7,
-  },
-  leveling: {
-    enabled: false,
-    announceChannelId: null,
-    levelRoles: {},
-  },
-  ticketPanels: {},
-};
-
 // --- Economy helpers ---
 
 function getEconomy(userId) {
@@ -78,39 +52,22 @@ function getAllEconomy() {
 // --- Leveling helpers ---
 
 function getLevel(userId) {
-  const leveling = load('leveling');
-  if (!leveling[userId]) {
-    leveling[userId] = { xp: 0, level: 1, lastMessage: 0 };
-    save('leveling', leveling);
+  const levels = load('levels');
+  if (!levels[userId]) {
+    levels[userId] = { xp: 0, level: 1, lastMessage: 0 };
+    save('levels', levels);
   }
-  return leveling[userId];
+  return levels[userId];
 }
 
 function setLevel(userId, data) {
-  const leveling = load('leveling');
-  leveling[userId] = data;
-  save('leveling', leveling);
+  const levels = load('levels');
+  levels[userId] = data;
+  save('levels', levels);
 }
 
 function getAllLevels() {
-  return load('leveling');
-}
-
-// --- Server settings ---
-
-function getSettings(guildId) {
-  const settings = load('settings');
-  if (!settings[guildId]) {
-    settings[guildId] = { ...DEFAULT_SETTINGS };
-    save('settings', settings);
-  }
-  return settings[guildId];
-}
-
-function setSettings(guildId, data) {
-  const settings = load('settings');
-  settings[guildId] = data;
-  save('settings', settings);
+  return load('levels');
 }
 
 // --- Moderation helpers ---
@@ -130,80 +87,232 @@ function getWarnings(userId) {
 
 function clearWarnings(userId) {
   const warnings = load('warnings');
-  delete warnings[userId];
+  warnings[userId] = [];
   save('warnings', warnings);
 }
+
+function removeWarning(userId, index) {
+  const warnings = load('warnings');
+  if (!warnings[userId]) return [];
+  if (index === undefined || index === null) {
+    warnings[userId] = [];
+  } else {
+    warnings[userId].splice(index, 1);
+  }
+  save('warnings', warnings);
+  return warnings[userId] || [];
+}
+
+// --- Strike helpers (separate, more serious escalation track from warnings) ---
+
+function addStrike(userId, strike) {
+  const strikes = load('strikes');
+  if (!strikes[userId]) strikes[userId] = [];
+  strikes[userId].push(strike);
+  save('strikes', strikes);
+  return strikes[userId];
+}
+
+function getStrikes(userId) {
+  const strikes = load('strikes');
+  return strikes[userId] || [];
+}
+
+function removeStrike(userId, index) {
+  const strikes = load('strikes');
+  if (!strikes[userId]) return [];
+  if (index === undefined || index === null) {
+    strikes[userId] = [];
+  } else {
+    strikes[userId].splice(index, 1);
+  }
+  save('strikes', strikes);
+  return strikes[userId] || [];
+}
+
+// --- Guild settings helpers (mute role, welcome/goodbye, automod, hierarchy, reaction roles) ---
+
+const DEFAULT_SETTINGS = {
+  mutedRoleId: null,
+  welcomeChannelId: null,
+  welcomeMessage: 'Welcome {user} to {server}! 🎉',
+  goodbyeChannelId: null,
+  goodbyeMessage: '{user} has left {server}. 👋',
+  modLogChannelId: null,
+  automod: { enabled: false, bannedWords: [] },
+  hierarchy: [], // ordered array of role IDs, lowest first, for /promote and /demote
+  reactionRoles: {}, // messageId -> { emoji: roleId }
+  rules: '',
+  faq: [], // { question, answer }
+  socials: [], // { platform, url }
+  affiliates: [], // { name, url }
+  suggestionsChannelId: null,
+  verifyRoleId: null,
+  security: {
+    inviteGuard: false,
+    webhookGuard: false,
+    joinGuard: false,
+    minAccountAgeDays: 7,
+  },
+  leveling: {
+    enabled: false,
+    announceChannelId: null, // null = announce in the channel where the message was sent
+    levelRoles: {}, // level (as string) -> roleId
+  },
+  ticketPanels: {}, // messageId -> [{ label, emoji, style }]
+};
+
+function getSettings(guildId) {
+  const all = load('settings');
+  if (!all[guildId]) {
+    all[guildId] = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+    save('settings', all);
+  }
+  // Merge in any new default keys added since a guild's settings were first created.
+  all[guildId] = { ...JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), ...all[guildId] };
+  return all[guildId];
+}
+
+function setSettings(guildId, data) {
+  const all = load('settings');
+  all[guildId] = data;
+  save('settings', all);
+}
+
+// --- Moderation log helpers ---
 
 function addModLog(guildId, entry) {
   const logs = load('modlogs');
   if (!logs[guildId]) logs[guildId] = [];
-  entry.id = logs[guildId].length + 1;
-  entry.timestamp = Date.now();
-  logs[guildId].push(entry);
+  const record = { id: logs[guildId].length + 1, timestamp: Date.now(), ...entry };
+  logs[guildId].push(record);
   save('modlogs', logs);
+  return record;
 }
 
-function getModLogs(guildId, options = {}) {
+function getModLogs(guildId, { userId, limit = 10 } = {}) {
   const logs = load('modlogs');
   let entries = logs[guildId] || [];
-  
-  if (options.userId) {
-    entries = entries.filter(e => e.userId === options.userId);
-  }
-  
-  if (options.limit) {
-    entries = entries.slice(-options.limit);
-  }
-  
-  return entries;
+  if (userId) entries = entries.filter(e => e.userId === userId);
+  return entries.slice(-limit).reverse();
 }
 
-// --- Backup helpers ---
+// --- Server backup helpers ---
 
 function saveBackup(guildId, backup) {
   const backups = load('backups');
-  if (!backups[guildId]) backups[guildId] = [];
-  backup.createdAt = Date.now();
-  backups[guildId].push(backup);
+  backups[guildId] = { ...backup, createdAt: Date.now() };
   save('backups', backups);
 }
 
 function getBackup(guildId) {
   const backups = load('backups');
-  const guildBackups = backups[guildId] || [];
-  return guildBackups.length > 0 ? guildBackups[guildBackups.length - 1] : null;
+  return backups[guildId] || null;
+}
+
+// --- Birthday helpers ---
+
+function setBirthday(userId, monthDay) {
+  const birthdays = load('birthdays');
+  birthdays[userId] = monthDay; // format "MM-DD"
+  save('birthdays', birthdays);
+}
+
+function getBirthday(userId) {
+  const birthdays = load('birthdays');
+  return birthdays[userId] || null;
+}
+
+function getAllBirthdays() {
+  return load('birthdays');
 }
 
 // --- Reminder helpers ---
 
-function addReminder(userId, message, remindAt, channelId, createdBy) {
+function addReminder(reminder) {
   const reminders = load('reminders');
-  if (!reminders.list) reminders.list = [];
-  if (!reminders.nextId) reminders.nextId = 1;
-  
-  const reminder = {
-    id: reminders.nextId++,
-    userId,
-    message,
-    remindAt,
-    channelId,
-    createdBy,
-  };
-  
-  reminders.list.push(reminder);
+  const nextId = (reminders.__nextId || 1);
+  reminders.__nextId = nextId + 1;
+  reminders[nextId] = { id: nextId, ...reminder };
   save('reminders', reminders);
-  return reminder;
+  return reminders[nextId];
+}
+
+function getRemindersForUser(userId) {
+  const reminders = load('reminders');
+  return Object.values(reminders).filter(r => r && typeof r === 'object' && r.userId === userId);
 }
 
 function getAllReminders() {
   const reminders = load('reminders');
-  return reminders.list || [];
+  return Object.values(reminders).filter(r => r && typeof r === 'object' && r.id);
 }
 
-function removeReminder(reminderId) {
+function removeReminder(id) {
   const reminders = load('reminders');
-  reminders.list = (reminders.list || []).filter(r => r.id !== reminderId);
+  delete reminders[id];
   save('reminders', reminders);
+}
+
+// --- Partner points (separate currency for rewarding partners) ---
+
+function getPartnerPoints(userId) {
+  const points = load('partnerpoints');
+  return points[userId] || 0;
+}
+
+function setPartnerPoints(userId, amount) {
+  const points = load('partnerpoints');
+  points[userId] = amount;
+  save('partnerpoints', points);
+}
+
+function getAllPartnerPoints() {
+  return load('partnerpoints');
+}
+
+// --- Mod points (awarded for closing tickets, tracked for the mod leaderboard) ---
+
+function addModPoint(userId, amount = 1) {
+  const points = load('modpoints');
+  points[userId] = (points[userId] || 0) + amount;
+  save('modpoints', points);
+  return points[userId];
+}
+
+function getAllModPoints() {
+  return load('modpoints');
+}
+
+// --- Vouch helpers ---
+
+function addVouch(userId, vouch) {
+  const vouches = load('vouches');
+  if (!vouches[userId]) vouches[userId] = [];
+  vouches[userId].push(vouch);
+  save('vouches', vouches);
+  return vouches[userId];
+}
+
+function getVouches(userId) {
+  const vouches = load('vouches');
+  return vouches[userId] || [];
+}
+
+function getAllVouches() {
+  return load('vouches');
+}
+
+function addDeniedVouch(userId, entry) {
+  const denied = load('deniedvouches');
+  if (!denied[userId]) denied[userId] = [];
+  denied[userId].push(entry);
+  save('deniedvouches', denied);
+  return denied[userId];
+}
+
+function getAllDeniedVouches() {
+  return load('deniedvouches');
 }
 
 module.exports = {
@@ -215,17 +324,34 @@ module.exports = {
   getLevel,
   setLevel,
   getAllLevels,
-  getSettings,
-  setSettings,
   addWarning,
   getWarnings,
   clearWarnings,
+  removeWarning,
+  addStrike,
+  getStrikes,
+  removeStrike,
+  getSettings,
+  setSettings,
   addModLog,
   getModLogs,
   saveBackup,
   getBackup,
+  setBirthday,
+  getBirthday,
+  getAllBirthdays,
   addReminder,
+  getRemindersForUser,
   getAllReminders,
   removeReminder,
+  getPartnerPoints,
+  setPartnerPoints,
+  getAllPartnerPoints,
+  addModPoint,
+  getAllModPoints,
+  addVouch,
+  getVouches,
+  getAllVouches,
+  addDeniedVouch,
+  getAllDeniedVouches,
 };
-
