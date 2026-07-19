@@ -327,11 +327,11 @@ module.exports = [
           }
 
           try {
-            await guild.roles.create({
-              name: roleName,
-              color: ROLE_COLORS[roleName] || null,
-              permissions: [],
-            });
+            const roleOptions = { name: roleName, permissions: [] };
+            if (ROLE_COLORS[roleName]) {
+              roleOptions.color = ROLE_COLORS[roleName];
+            }
+            await guild.roles.create(roleOptions);
             created++;
             await sleep(500);
           } catch (err) {
@@ -342,6 +342,49 @@ module.exports = [
 
       await interaction.editReply(
         `✅ Role import complete!\n**Created:** ${created}\n**Skipped (already existed):** ${skipped}\n\n⚠️ Discord doesn't preserve creation order visually — you'll likely want to drag the roles into the exact order shown in Server Settings → Roles.`
+      );
+    },
+  },
+
+  {
+    data: new SlashCommandBuilder()
+      .setName('wiperoles')
+      .setDescription('⚠️ DANGER: Delete ALL deletable roles in this server (irreversible)')
+      .addStringOption(o => o.setName('server_name').setDescription("Type this server's exact name to confirm").setRequired(true))
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    async execute(interaction) {
+      const typed = interaction.options.getString('server_name');
+
+      if (typed !== interaction.guild.name) {
+        return interaction.reply({
+          content: `❌ That doesn't match. To confirm you understand this deletes **every deletable role**, type the server's exact name: \`${interaction.guild.name}\``,
+          ephemeral: true,
+        });
+      }
+
+      await interaction.deferReply();
+      const guild = interaction.guild;
+
+      // Skip @everyone (can't be deleted) and "managed" roles (bot roles, integration/booster
+      // roles created by Discord itself) — trying to delete those just errors out anyway.
+      const deletableRoles = guild.roles.cache.filter(r => r.id !== guild.id && !r.managed);
+
+      let deleted = 0;
+      let failed = 0;
+
+      for (const role of deletableRoles.values()) {
+        try {
+          await role.delete('Role wipe requested via /wiperoles');
+          deleted++;
+          await sleep(500);
+        } catch (err) {
+          console.error(`Failed to delete role "${role.name}":`, err);
+          failed++;
+        }
+      }
+
+      await interaction.editReply(
+        `✅ Deleted ${deleted} role(s).${failed > 0 ? ` (${failed} couldn't be deleted — likely above my own role or managed by an integration.)` : ''}`
       );
     },
   },
