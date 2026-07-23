@@ -140,12 +140,12 @@ const DEFAULT_SETTINGS = {
   goodbyeMessage: '{user} has left {server}. 👋',
   modLogChannelId: null,
   automod: { enabled: false, bannedWords: [] },
-  hierarchy: [], // ordered array of role IDs, lowest first, for /promote and /demote
-  reactionRoles: {}, // messageId -> { emoji: roleId }
+  hierarchy: [],
+  reactionRoles: {},
   rules: '',
-  faq: [], // { question, answer }
-  socials: [], // { platform, url }
-  affiliates: [], // { name, url }
+  faq: [],
+  socials: [],
+  affiliates: [],
   suggestionsChannelId: null,
   verifyRoleId: null,
   security: {
@@ -156,10 +156,11 @@ const DEFAULT_SETTINGS = {
   },
   leveling: {
     enabled: false,
-    announceChannelId: null, // null = announce in the channel where the message was sent
-    levelRoles: {}, // level (as string) -> roleId
+    announceChannelId: null,
+    levelRoles: {},
   },
-  ticketPanels: {}, // messageId -> [{ label, emoji, style }]
+  ticketPanels: {},
+  serverInfoChannels: null,
 };
 
 function getSettings(guildId) {
@@ -168,7 +169,6 @@ function getSettings(guildId) {
     all[guildId] = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
     save('settings', all);
   }
-  // Merge in any new default keys added since a guild's settings were first created.
   all[guildId] = { ...JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), ...all[guildId] };
   return all[guildId];
 }
@@ -214,7 +214,7 @@ function getBackup(guildId) {
 
 function setBirthday(userId, monthDay) {
   const birthdays = load('birthdays');
-  birthdays[userId] = monthDay; // format "MM-DD"
+  birthdays[userId] = monthDay;
   save('birthdays', birthdays);
 }
 
@@ -271,17 +271,20 @@ function getAllPartnerPoints() {
   return load('partnerpoints');
 }
 
-// --- Mod points (awarded for closing tickets, tracked for the mod leaderboard) ---
+// --- Mod stats (tracks closes and renames/claims separately, for the mod leaderboard) ---
+// Each is worth 2 points; total points = (closes + renames) * 2
 
-function addModPoint(userId, amount = 1) {
-  const points = load('modpoints');
-  points[userId] = (points[userId] || 0) + amount;
-  save('modpoints', points);
-  return points[userId];
+function addModAction(userId, type) {
+  const stats = load('modstats');
+  if (!stats[userId]) stats[userId] = { closes: 0, renames: 0 };
+  if (type === 'close') stats[userId].closes += 1;
+  if (type === 'rename') stats[userId].renames += 1;
+  save('modstats', stats);
+  return stats[userId];
 }
 
-function getAllModPoints() {
-  return load('modpoints');
+function getAllModStats() {
+  return load('modstats');
 }
 
 // --- Vouch helpers ---
@@ -347,8 +350,8 @@ module.exports = {
   getPartnerPoints,
   setPartnerPoints,
   getAllPartnerPoints,
-  addModPoint,
-  getAllModPoints,
+  addModAction,
+  getAllModStats,
   addVouch,
   getVouches,
   getAllVouches,
