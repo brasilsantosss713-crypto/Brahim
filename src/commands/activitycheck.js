@@ -89,7 +89,7 @@ module.exports = {
             });
 
 
-        }, 300000); // 5 minutes
+        }, 86400000); // 24 Hours
 
     }
 };
