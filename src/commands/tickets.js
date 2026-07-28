@@ -1,58 +1,97 @@
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const {
+  SlashCommandBuilder,
+  EmbedBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  PermissionFlagsBits
+} = require("discord.js");
+
 
 module.exports = {
-  name: "ticketpanel",
-  description: "Create ticket panel",
 
-  async execute(message) {
-    const channel = message.guild.channels.cache.get("CHANNEL_ID"); // 1527166816676220971
+data: new SlashCommandBuilder()
+.setName("ticketpanel")
+.setDescription("Create a ticket panel")
+.setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 
-    const embed = new EmbedBuilder()
-      .setTitle("Tickets")
-      .setDescription("Open a ticket below")
-      .setColor("Red");
+.addChannelOption(option =>
+ option
+ .setName("channel")
+ .setDescription("Ticket panel channel")
+ .setRequired(true)
+),
 
-    const row1 = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId("giveaway_claim")
-          .setLabel("🎁 Giveaway Claim")
-          .setStyle(ButtonStyle.Primary),
 
-        new ButtonBuilder()
-          .setCustomId("partnership")
-          .setLabel("🤝 Partnership")
-          .setStyle(ButtonStyle.Primary),
+async execute(interaction) {
 
-        new ButtonBuilder()
-          .setCustomId("market")
-          .setLabel("🛒 Market")
-          .setStyle(ButtonStyle.Primary)
-      );
+const channel = interaction.options.getChannel("channel");
 
-    const row2 = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId("giveaway_sponsors")
-          .setLabel("💰 Giveaway Sponsors")
-          .setStyle(ButtonStyle.Success),
 
-        new ButtonBuilder()
-          .setCustomId("build_requests")
-          .setLabel("🏗️ Build Requests")
-          .setStyle(ButtonStyle.Success),
+const embed = new EmbedBuilder()
+.setTitle("Tickets")
+.setDescription("Open a ticket below")
+.setColor("Red");
 
-        new ButtonBuilder()
-          .setCustomId("support")
-          .setLabel("❓ General Support")
-          .setStyle(ButtonStyle.Secondary)
-      );
 
-    await channel.send({
-      embeds: [embed],
-      components: [row1, row2]
-    });
+const menu = new StringSelectMenuBuilder()
+.setCustomId("ticket_select")
+.setPlaceholder("Choose a ticket type")
+.addOptions([
 
-    message.reply("✅ Ticket panel created!");
-  }
+{
+label:"Giveaway Claim",
+description:"Claim a Giveaway always provide proof.",
+value:"giveaway"
+},
+
+{
+label:"Partnership",
+description:"Partnering",
+value:"partner"
+},
+
+{
+label:"Market",
+description:"Buy or sell skellies.",
+value:"market"
+},
+
+{
+label:"Giveaway Sponsors",
+description:"Sponsor a giveaway",
+value:"sponsor"
+},
+
+{
+label:"Build Requests",
+description:"Request a build make sure to send a schematic.",
+value:"build"
+},
+
+{
+label:"General Support",
+description:"Open a ticket for support or questions.",
+value:"support"
+}
+
+]);
+
+
+const row = new ActionRowBuilder()
+.addComponents(menu);
+
+
+await channel.send({
+embeds:[embed],
+components:[row]
+});
+
+
+await interaction.reply({
+content:"✅ Ticket panel created!",
+ephemeral:true
+});
+
+}
+
 };
