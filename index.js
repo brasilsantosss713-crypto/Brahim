@@ -25,10 +25,18 @@ const commandsPath = path.join(__dirname, 'src', 'commands');
 const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
 
 for (const file of commandFiles) {
-  const commandModule = require(path.join(commandsPath, file));
-  const list = Array.isArray(commandModule) ? commandModule : commandModule.commands;
-  for (const command of list) {
-    client.commands.set(command.data.name, command);
+  try {
+    const commandModule = require(path.join(commandsPath, file));
+    const list = Array.isArray(commandModule) ? commandModule : commandModule.commands;
+    if (!Array.isArray(list)) {
+      console.error(`⚠️ Skipping ${file} — it doesn't export an array of commands (check module.exports at the top of the file).`);
+      continue;
+    }
+    for (const command of list) {
+      client.commands.set(command.data.name, command);
+    }
+  } catch (err) {
+    console.error(`⚠️ Failed to load ${file}:`, err.message);
   }
 }
 
@@ -43,10 +51,15 @@ async function deployCommands() {
 
   const commandsJson = [];
   for (const file of commandFiles) {
-    const commandModule = require(path.join(commandsPath, file));
-    const list = Array.isArray(commandModule) ? commandModule : commandModule.commands;
-    for (const command of list) {
-      commandsJson.push(command.data.toJSON());
+    try {
+      const commandModule = require(path.join(commandsPath, file));
+      const list = Array.isArray(commandModule) ? commandModule : commandModule.commands;
+      if (!Array.isArray(list)) continue;
+      for (const command of list) {
+        commandsJson.push(command.data.toJSON());
+      }
+    } catch (err) {
+      console.error(`⚠️ Failed to load ${file} for deployment:`, err.message);
     }
   }
 
