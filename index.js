@@ -4,7 +4,7 @@ const path = require('path');
 const { Client, GatewayIntentBits, Partials, Collection, REST, Routes, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder } = require('discord.js');
 const { grantMessageXp } = require('./src/commands/leveling');
 const { createTicketChannel, closeTicket, buildLeaderboardEmbed, buildLeaderboardRow } = require('./src/commands/tickets');
-const { handleApplicationButtonClick, handleApplicationModalSubmit, handleApplicationDecision } = require('./src/commands/applications');
+const { handleApplicationButtonClick, handleApplicationDecision } = require('./src/commands/applications');
 const store = require('./src/data/store');
 
 const client = new Client({
@@ -91,24 +91,18 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // Application "Apply for ___" buttons — opens the matching modal form
+  // Application "Apply for ___" buttons — starts the DM Q&A flow
   if (interaction.isButton() && interaction.customId.startsWith('app_open_')) {
     try {
       await handleApplicationButtonClick(interaction);
     } catch (error) {
-      console.error('Failed to open application modal:', error);
-      await interaction.reply({ content: 'Something went wrong opening that form. Please try again.', ephemeral: true }).catch(() => {});
-    }
-    return;
-  }
-
-  // Application modal submissions
-  if (interaction.isModalSubmit() && interaction.customId.startsWith('app_submit_')) {
-    try {
-      await handleApplicationModalSubmit(interaction);
-    } catch (error) {
-      console.error('Failed to handle application modal submit:', error);
-      await interaction.reply({ content: 'Something went wrong submitting your application. Please try again.', ephemeral: true }).catch(() => {});
+      console.error('Failed to start application:', error);
+      const errorMessage = { content: 'Something went wrong starting your application. Please try again.', ephemeral: true };
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(errorMessage).catch(() => {});
+      } else {
+        await interaction.reply(errorMessage).catch(() => {});
+      }
     }
     return;
   }
@@ -183,4 +177,163 @@ client.on('interactionCreate', async interaction => {
       ButtonBuilder.from(message.components[0].components[1]),
     );
 
-    await interaction.update({ components: [claime
+    await interaction.update({ components: [claimedRow] });
+    await interaction.channel.send(`🙋 This ticket has been claimed by ${interaction.user}.`);
+
+    store.addModAction(interaction.user.id, 'rename');
+
+    const currentName = interaction.channel.name;
+    const newName = currentName.startsWith('ticket-')
+      ? currentName.replace('ticket-', 'claimed-')
+      : `claimed-${currentName}`;
+    await interaction.channel.setName(newName.slice(0, 100)).catch(() => {});
+
+    return;
+  }
+
+  // Ticket "Close" button
+  if (interaction.isButton() && interaction.customId === 'ticket_close') {
+    const channel = interaction.channel;
+    const ownerId = channel.topic?.split(':')[1];
+    const isOwner = interaction.user.id === ownerId;
+    const isStaff = interaction.member.permissions.has(PermissionFlagsBits.ManageChannels);
+
+    if (!isOwner && !isStaff) {
+      return interaction.reply({ content: "You don't have permission to close this ticket.", ephemeral: true });
+    }
+
+    await interaction.reply('🔒 Closing this ticket and generating a transcript...');
+    await closeTicket(channel, interaction.user);
+    return;
+  }
+
+  // Application Accept/Deny buttons
+  if (interaction.isButton() && (interaction.customId.startsWith('app_accept_') || interaction.customId.startsWith('app_deny_'))) {
+    try {
+      await handleApplicationDecision(interaction);
+    } catch (error) {
+      console.error('Failed to handle application decision:', error);
+      const errorMessage = { content: 'Something went wrong processing that decision.', ephemeral: true };
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(errorMessage).catch(() => {});
+      } else {
+        await interaction.reply(errorMessage).catch(() => {});
+      }
+    }
+    return;
+  }
+});
+
+client.on('messageCreate', async message => {
+  if (message.author.bot || !message.guild) return;
+
+  const settings = store.getSettings(message.guild.id);
+  if (settings.automod.enabled && settings.automod.bannedWords.length > 0) {
+    const content = message.content.toLowerCase();
+    const matched = settings.automod.bannedWords.some(word => content.includes(word));
+    if (matched) {
+      await message.delete().catch(() => {});
+      message.channel.send(`⚠️ ${message.author}, that message was removed by automod.`)
+        .then(m => setTimeout(() => m.delete().catch(() => {}), 5000))
+        .catch(() => {});
+      return;
+    }
+  }
+
+  const newLevel = grantMessageXp(message.author.id, message.guild.id);
+  if (newLevel) {
+    const announceChannel = newLevel.announceChannelId
+      ? message.guild.channels.cache.get(newLevel.announceChannelId)
+      : message.channel;
+
+    if (announceChannel) {
+      announceChannel.send(`🎉 ${message.author} just leveled up to **Level ${newLevel.level}**!`).catch(() => {});
+    }
+
+    if (newLevel.roleId) {
+      const member = message.member;
+      member?.roles.add(newLevel.roleId).catch(() => {});
+    }
+  }
+});
+
+client.on('guildMemberAdd', async member => {
+  const settings = store.getSettings(member.guild.id);
+  if (!settings.welcomeChannelId) return;
+
+  const channel = member.guild.channels.cache.get(settings.welcomeChannelId);
+  if (!channel) return;
+
+  const text = settings.welcomeMessage
+    .replace(/{user}/g, `${member}`)
+    .replace(/{server}/g, member.guild.name);
+  channel.send(text).catch(() => {});
+});
+
+client.on('guildMemberRemove', async member => {
+  const settings = store.getSettings(member.guild.id);
+  if (!settings.goodbyeChannelId) return;
+
+  const channel = member.guild.channels.cache.get(settings.goodbyeChannelId);
+  if (!channel) return;
+
+  const text = settings.goodbyeMessage
+    .replace(/{user}/g, member.user.tag)
+    .replace(/{server}/g, member.guild.name);
+  channel.send(text).catch(() => {});
+});
+
+async function handleReactionRole(reaction, user, isAdd) {
+  if (user.bot) return;
+  if (reaction.partial) {
+    try { await reaction.fetch(); } catch { return; }
+  }
+
+  const guild = reaction.message.guild;
+  if (!guild) return;
+
+  const settings = store.getSettings(guild.id);
+  const mapping = settings.reactionRoles[reaction.message.id];
+  if (!mapping) return;
+
+  const emojiKey = reaction.emoji.id ? `<:${reaction.emoji.name}:${reaction.emoji.id}>` : reaction.emoji.name;
+  const roleId = mapping[emojiKey] || mapping[reaction.emoji.name];
+  if (!roleId) return;
+
+  const member = await guild.members.fetch(user.id).catch(() => null);
+  if (!member) return;
+
+  if (isAdd) {
+    await member.roles.add(roleId).catch(() => {});
+  } else {
+    await member.roles.remove(roleId).catch(() => {});
+  }
+}
+
+client.on('messageReactionAdd', (reaction, user) => handleReactionRole(reaction, user, true));
+client.on('messageReactionRemove', (reaction, user) => handleReactionRole(reaction, user, false));
+
+setInterval(async () => {
+  const due = store.getAllReminders().filter(r => r.remindAt <= Date.now());
+
+  for (const reminder of due) {
+    store.removeReminder(reminder.id);
+
+    try {
+      const user = await client.users.fetch(reminder.userId);
+      const creator = reminder.createdBy !== reminder.userId ? await client.users.fetch(reminder.createdBy).catch(() => null) : null;
+      const text = creator
+        ? `⏰ Reminder from ${creator.tag}: ${reminder.message}`
+        : `⏰ Reminder: ${reminder.message}`;
+
+      await user.send(text).catch(async () => {
+        const channel = await client.channels.fetch(reminder.channelId).catch(() => null);
+        if (channel) channel.send(`${user}, ${text}`).catch(() => {});
+      });
+    } catch (err) {
+      console.error(`Failed to deliver reminder #${reminder.id}:`, err);
+    }
+  }
+}, 30 * 1000);
+
+client.login(process.env.DISCORD_TOKEN);
