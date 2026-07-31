@@ -1,6 +1,6 @@
 const {
   SlashCommandBuilder, PermissionFlagsBits, ChannelType, EmbedBuilder,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle,
 } = require('discord.js');
 
 const PANEL_TITLE = '✨ Want to join the team? ✨';
@@ -37,36 +37,35 @@ Good luck, and thank you for wanting to join the team!! 💕✨`;
 const CATEGORIES = {
   staff: {
     label: 'Ticket Staff',
-    modalTitle: 'Ticket Staff Application',
-    fields: [
-      { key: 'age', label: 'Your age', style: TextInputStyle.Short, required: true },
-      { key: 'networth', label: 'Your networth (min 50M)', style: TextInputStyle.Short, required: true },
-      { key: 'activity', label: 'Weekly activity (min 10M)', style: TextInputStyle.Short, required: true },
-      { key: 'experience', label: 'Relevant experience (if any)', style: TextInputStyle.Paragraph, required: false },
-      { key: 'why', label: 'Why should we pick you?', style: TextInputStyle.Paragraph, required: true },
+    questions: [
+      { key: 'age', prompt: "What's your age?" },
+      { key: 'networth', prompt: "What's your networth? (min 50M)" },
+      { key: 'activity', prompt: "What's your weekly activity? (min 10M)" },
+      { key: 'experience', prompt: 'Do you have any relevant experience? If so, describe it.' },
+      { key: 'why', prompt: 'Why should we pick you?' },
     ],
   },
   partner: {
     label: 'Partner Manager',
-    modalTitle: 'Partner Manager Application',
-    fields: [
-      { key: 'age', label: 'Your age', style: TextInputStyle.Short, required: true },
-      { key: 'experience', label: 'Your 5+ partnership experience', style: TextInputStyle.Paragraph, required: true },
-      { key: 'weekly_partners', label: 'Partners you can bring weekly', style: TextInputStyle.Short, required: true },
-      { key: 'why', label: 'Why should we pick you?', style: TextInputStyle.Paragraph, required: true },
+    questions: [
+      { key: 'age', prompt: "What's your age?" },
+      { key: 'experience', prompt: 'Describe your 5+ server partnership experience.' },
+      { key: 'weekly_partners', prompt: 'How many partners can you realistically bring in weekly?' },
+      { key: 'why', prompt: 'Why should we pick you?' },
     ],
   },
   builder: {
     label: 'Builder',
-    modalTitle: 'Builder Application',
-    fields: [
-      { key: 'age', label: 'Your age', style: TextInputStyle.Short, required: true },
-      { key: 'networth', label: 'Your networth (min 100M)', style: TextInputStyle.Short, required: true },
-      { key: 'portfolio', label: 'Links to your build portfolio', style: TextInputStyle.Paragraph, required: true },
-      { key: 'why', label: 'Why should we pick you?', style: TextInputStyle.Paragraph, required: true },
+    questions: [
+      { key: 'age', prompt: "What's your age?" },
+      { key: 'networth', prompt: "What's your networth? (min 100M)" },
+      { key: 'portfolio', prompt: 'Share links to your build portfolio/examples.' },
+      { key: 'why', prompt: 'Why should we pick you?' },
     ],
   },
 };
+
+const QUESTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes per question
 
 module.exports = [
   {
@@ -97,73 +96,76 @@ module.exports = [
   },
 ];
 
-// Opens the right modal when someone clicks an "Apply for ___" button.
+// Runs the whole DM Q&A flow when someone clicks an "Apply for ___" button.
 // customId format: app_open_<category>_<reviewChannelId>
 async function handleApplicationButtonClick(interaction) {
-  const parts = interaction.customId.split('_'); // app_open_staff_123, etc.
-  const category = parts[2];
-  const reviewChannelId = parts[3];
-  const config = CATEGORIES[category];
-
-  if (!config) return;
-
-  const modal = new ModalBuilder()
-    .setCustomId(`app_submit_${category}_${reviewChannelId}`)
-    .setTitle(config.modalTitle);
-
-  const rows = config.fields.map(field =>
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId(field.key)
-        .setLabel(field.label)
-        .setStyle(field.style)
-        .setRequired(field.required)
-        .setMaxLength(field.style === TextInputStyle.Paragraph ? 1000 : 100)
-    )
-  );
-
-  modal.addComponents(...rows);
-  await interaction.showModal(modal);
-}
-
-// Handles the modal submission, builds a review embed with Accept/Deny buttons.
-// customId format: app_submit_<category>_<reviewChannelId>
-async function handleApplicationModalSubmit(interaction) {
   const parts = interaction.customId.split('_');
   const category = parts[2];
   const reviewChannelId = parts[3];
   const config = CATEGORIES[category];
+  if (!config) return;
 
-  if (!config) {
-    return interaction.reply({ content: 'Something went wrong — unknown application category.', ephemeral: true });
+  const guild = interaction.guild;
+  const user = interaction.user;
+
+  let dmChannel;
+  try {
+    dmChannel = await user.createDM();
+    await dmChannel.send(
+      `👋 Hey! Thanks for applying for **${config.label}** in **${guild.name}**.\n` +
+      `I'll ask you ${config.questions.length} quick questions — just reply here with your answer after each one. ` +
+      `You have 5 minutes per question.`
+    );
+  } catch {
+    return interaction.reply({
+      content: "⚠️ I couldn't DM you — please enable direct messages from server members and try again.",
+      ephemeral: true,
+    });
   }
+
+  await interaction.reply({ content: '✅ Check your DMs to continue your application!', ephemeral: true });
 
   const answers = {};
-  for (const field of config.fields) {
-    answers[field.key] = interaction.fields.getTextInputValue(field.key) || 'N/A';
+  for (const question of config.questions) {
+    await dmChannel.send(`**${question.prompt}**`);
+
+    try {
+      const collected = await dmChannel.awaitMessages({
+        filter: m => m.author.id === user.id,
+        max: 1,
+        time: QUESTION_TIMEOUT_MS,
+        errors: ['time'],
+      });
+      answers[question.key] = collected.first().content;
+    } catch {
+      await dmChannel.send('⏰ You took too long to respond. Please click **Apply** again to restart your application.').catch(() => {});
+      return;
+    }
   }
+
+  await dmChannel.send('✅ Thanks! Your application has been submitted for review. Sit tight for a staff decision.').catch(() => {});
 
   const embed = new EmbedBuilder()
     .setColor(0xF39C12)
     .setTitle(`📋 New ${config.label} Application`)
-    .setThumbnail(interaction.user.displayAvatarURL())
+    .setThumbnail(user.displayAvatarURL())
     .addFields(
-      { name: 'Applicant', value: interaction.user.tag, inline: true },
+      { name: 'Applicant', value: user.tag, inline: true },
       { name: 'Category', value: config.label, inline: true },
-      ...config.fields.map(field => ({ name: field.label, value: answers[field.key] })),
+      ...config.questions.map(q => ({ name: q.prompt, value: answers[q.key] || 'N/A' })),
     )
-    .setFooter({ text: `User ID: ${interaction.user.id}` })
+    .setFooter({ text: `User ID: ${user.id}` })
     .setTimestamp();
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`app_accept_${interaction.user.id}`).setLabel('Accept').setEmoji('✅').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`app_deny_${interaction.user.id}`).setLabel('Deny').setEmoji('❌').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`app_accept_${user.id}`).setLabel('Accept').setEmoji('✅').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`app_deny_${user.id}`).setLabel('Deny').setEmoji('❌').setStyle(ButtonStyle.Danger),
   );
 
-  const reviewChannel = interaction.guild.channels.cache.get(reviewChannelId) || interaction.channel;
-  await reviewChannel.send({ embeds: [embed], components: [row] });
-
-  await interaction.reply({ content: '✅ Your application has been submitted! Please wait for a staff decision.', ephemeral: true });
+  const reviewChannel = guild.channels.cache.get(reviewChannelId);
+  if (reviewChannel) {
+    await reviewChannel.send({ embeds: [embed], components: [row] });
+  }
 }
 
 // Handles the Accept/Deny buttons on a submitted application embed.
@@ -194,5 +196,4 @@ async function handleApplicationDecision(interaction) {
 }
 
 module.exports.handleApplicationButtonClick = handleApplicationButtonClick;
-module.exports.handleApplicationModalSubmit = handleApplicationModalSubmit;
 module.exports.handleApplicationDecision = handleApplicationDecision;
